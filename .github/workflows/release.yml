@@ -32,7 +32,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # macOS: 只构建 Apple Silicon (aarch64) 版本
+          # macOS Intel 版本 (x86_64)
+          - platform: 'macos-13'
+            args: '--target x86_64-apple-darwin'
+          # macOS Apple Silicon 版本 (aarch64)
           - platform: 'macos-latest'
             args: '--target aarch64-apple-darwin'
           - platform: 'ubuntu-22.04'
@@ -54,11 +57,11 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin' || '' }}
+          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin' || (matrix.platform == 'macos-13' && 'x86_64-apple-darwin' || '') }}
 
       # --- macOS 依赖 ---
       - name: Install macOS Dependencies
-        if: matrix.platform == 'macos-latest'
+        if: startsWith(matrix.platform, 'macos')
         run: |
           brew install protobuf
 
