@@ -10,26 +10,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  create_release:
-    runs-on: ubuntu-latest
-    outputs:
-      release_id: ${{ steps.create_release_step.outputs.id }}
-      upload_url: ${{ steps.create_release_step.outputs.upload_url }}
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Create Release
-        id: create_release_step
-        uses: softprops/action-gh-release@v1
-        with:
-          name: LawVault ${{ github.ref_name }}
-          draft: false
-          prerelease: true
-          generate_release_notes: true
-          tag_name: ${{ github.ref_type == 'tag' && github.ref_name || 'manual-build' }}
-
   build-tauri:
-    needs: create_release
     strategy:
       fail-fast: false
       matrix:
@@ -37,13 +18,17 @@ jobs:
           # macOS Intel 版本 (x86_64)
           - platform: 'macos-13'
             args: '--target x86_64-apple-darwin'
+            target: 'x86_64-apple-darwin'
           # macOS Apple Silicon 版本 (aarch64)
           - platform: 'macos-latest'
             args: '--target aarch64-apple-darwin'
+            target: 'aarch64-apple-darwin'
           - platform: 'ubuntu-22.04'
             args: ''
+            target: ''
           - platform: 'windows-latest'
             args: ''
+            target: ''
 
     runs-on: ${{ matrix.platform }}
     
@@ -59,7 +44,7 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin' || (matrix.platform == 'macos-13' && 'x86_64-apple-darwin' || '') }}
+          targets: ${{ matrix.target }}
 
       # --- macOS 依赖 ---
       - name: Install macOS Dependencies
@@ -89,9 +74,10 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          releaseId: ${{ needs.create_release.outputs.release_id }}
           args: ${{ matrix.args }}
-          tagName: ${{ github.ref_name }}
+          tagName: ${{ github.ref_type == 'tag' && github.ref_name || 'manual-build' }}
+          releaseName: LawVault ${{ github.ref_type == 'tag' && github.ref_name || 'Manual Build' }}
+          releaseDraft: true
 
       # 上传 Windows 绿色版 Exe
       - name: Upload Windows Portable Exe
