@@ -24,8 +24,9 @@ jobs:
         with:
           name: LawVault ${{ github.ref_name }}
           draft: false
-          prerelease: false
+          prerelease: true
           generate_release_notes: true
+          tag_name: ${{ github.ref_type == 'tag' && github.ref_name || 'manual-build' }}
 
   build-tauri:
     needs: create_release
