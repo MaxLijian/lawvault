@@ -15,8 +15,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # macOS Intel 版本 (x86_64)
-          - platform: 'macos-13'
+          # macOS Intel 版本 (x86_64) - 使用 macos-14
+          - platform: 'macos-14'
             args: '--target x86_64-apple-darwin'
             target: 'x86_64-apple-darwin'
           # macOS Apple Silicon 版本 (aarch64)
