@@ -10,7 +10,24 @@ on:
   workflow_dispatch:
 
 jobs:
+  create_release:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch'
+    outputs:
+      upload_url: ${{ steps.create_release_step.outputs.upload_url }}
+    steps:
+      - name: Create Release
+        id: create_release_step
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: manual-build
+          name: LawVault Manual Build
+          draft: true
+          prerelease: true
+
   build-tauri:
+    needs: create_release
+    if: always() && (needs.create_release.result == 'success' || github.event_name == 'push')
     strategy:
       fail-fast: false
       matrix:
@@ -88,5 +105,5 @@ jobs:
         with:
           upload_url: ${{ needs.create_release.outputs.upload_url }}
           asset_path: src-tauri/target/release/lawvault.exe
-          asset_name: LawVault-Portable-${{ github.ref_name }}-x64.exe
+          asset_name: LawVault-Portable-${{ github.ref_type == 'tag' && github.ref_name || 'manual' }}-x64.exe
           asset_content_type: application/vnd.microsoft.portable-executable
