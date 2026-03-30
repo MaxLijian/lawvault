@@ -96,14 +96,4 @@ jobs:
           releaseName: LawVault ${{ github.ref_type == 'tag' && github.ref_name || 'Manual Build' }}
           releaseDraft: true
 
-      # 上传 Windows 绿色版 Exe
-      - name: Upload Windows Portable Exe
-        if: matrix.platform == 'windows-latest'
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ needs.create_release.outputs.upload_url }}
-          asset_path: src-tauri/target/release/lawvault.exe
-          asset_name: LawVault-Portable-${{ github.ref_type == 'tag' && github.ref_name || 'manual' }}-x64.exe
-          asset_content_type: application/vnd.microsoft.portable-executable
+
