@@ -75,6 +75,11 @@ export interface AppSettings {
   embedding_api_key: string;
   embedding_model: string;
 
+  reranker_type: "dashscope" | "local" | "custom";
+  reranker_base_url: string;
+  reranker_api_key: string;
+  reranker_model: string;
+
   enable_ai_chat: boolean;
   chat_base_url: string;
   chat_api_key: string;
@@ -82,6 +87,15 @@ export interface AppSettings {
   chat_top_k: number;
 
   max_agent_loops: number;
+
+  use_external_chat_api: boolean;
+  external_chat_base_url: string;
+  external_chat_api_key: string;
+  external_chat_model: string;
+  external_chat_api_choice: number;
+  external_chat_base_url_2: string;
+  external_chat_api_key_2: string;
+  external_chat_model_2: string;
 }
 
 export interface DraftMaterial {

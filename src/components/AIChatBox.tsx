@@ -1,7 +1,7 @@
 // src/components/AIChatBox.tsx
 
 import React, { useState, useEffect, useRef, useMemo } from "react";
-import { Sparkles, Bot, AlertCircle, FileText, Square, BrainCircuit } from "lucide-react";
+import { Sparkles, Bot, AlertCircle, FileText, Square, BrainCircuit, Copy, Check } from "lucide-react";
 import { startChatStream, getSettings, stopChat } from "../services/api";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -17,8 +17,16 @@ export const AIChatBox: React.FC<AIChatBoxProps> = ({ query, results, mode = "si
   const [isStreaming, setIsStreaming] = useState(false);
   const [isEnabled, setIsEnabled] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
   
   const [isThoughtExpanded, setIsThoughtExpanded] = useState(false);
+
+  const handleCopy = () => {
+    navigator.clipboard.writeText(content).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  };
   
   const eventIdRef = useRef<string | null>(null);
 
@@ -107,11 +115,30 @@ export const AIChatBox: React.FC<AIChatBoxProps> = ({ query, results, mode = "si
               {isStreaming && <span className="loading loading-dots loading-xs opacity-50"></span>}
             </h3>
             
-            {isStreaming && (
-                <button onClick={handleStop} className="btn btn-xs btn-ghost text-error gap-1 hover:bg-error/10 transition-colors">
-                    <Square size={12} className="fill-current" /> 停止生成
+            <div className="flex items-center gap-2">
+              {!isStreaming && content && (
+                <button 
+                  onClick={handleCopy} 
+                  className="btn btn-xs btn-ghost gap-1 hover:bg-base-300/50 transition-colors flex items-center"
+                >
+                  {copied ? (
+                    <>
+                      <Check size={12} className="text-success" /> 已复制
+                    </>
+                  ) : (
+                    <>
+                      <Copy size={12} /> 复制
+                    </>
+                  )}
                 </button>
-            )}
+              )}
+              
+              {isStreaming && (
+                  <button onClick={handleStop} className="btn btn-xs btn-ghost text-error gap-1 hover:bg-error/10 transition-colors">
+                      <Square size={12} className="fill-current" /> 停止生成
+                  </button>
+              )}
+            </div>
         </div>
 
         {error ? (

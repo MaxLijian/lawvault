@@ -10,15 +10,11 @@ import {
   Globe,
   Cpu,
   Info,
-  Mail,
-  Briefcase,
-  Copyright,
   Loader2,
   CheckCircle2,
   Settings,
   HardDrive,
   FolderOpen,
-  Github,
 } from "lucide-react";
 import {
   getSettings,
@@ -28,7 +24,6 @@ import {
   selectFolder,
 } from "../services/api";
 import { getVersion } from "@tauri-apps/api/app";
-import { openUrl } from "@tauri-apps/plugin-opener";
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -37,13 +32,14 @@ interface SettingsModalProps {
 
 type TabKey = "general" | "embedding" | "chat" | "advanced" | "about";
 
-const SettingInput = ({
-  label,
-  value,
-  onChange,
-  placeholder,
-  type = "text",
-  icon: Icon,
+const SettingInput = ({ 
+  label, 
+  value, 
+  onChange, 
+  placeholder, 
+  type = "text", 
+  icon: Icon, 
+  options = [] 
 }: any) => (
   <div className="form-control">
     <label className="label">
@@ -52,13 +48,27 @@ const SettingInput = ({
         {label}
       </span>
     </label>
-    <input
-      type={type}
-      value={value}
-      onChange={(e) => onChange(e.target.value)}
-      placeholder={placeholder}
-      className="input input-bordered input-sm font-mono text-xs"
-    />
+    {options.length > 0 ? (
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className="select select-bordered select-sm font-mono text-xs"
+      >
+        {options.map((option: any) => (
+          <option key={option.value} value={option.value}>
+            {option.label}
+          </option>
+        ))}
+      </select>
+    ) : (
+      <input
+        type={type}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder}
+        className="input input-bordered input-sm font-mono text-xs"
+      />
+    )}
   </div>
 );
 
@@ -72,14 +82,28 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
     embedding_base_url: "http://localhost:11434/v1",
     embedding_api_key: "ollama",
-    embedding_model: "embeddinggemma:300m",
+    embedding_model: "qwen3-embedding:0.6b",
+
+    reranker_type: "dashscope",
+    reranker_base_url: "https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank",
+    reranker_api_key: "sk-b5ed0ddae2bb4ca1ae401a29111e0360",
+    reranker_model: "qwen3-vl-rerank",
 
     enable_ai_chat: false,
     chat_base_url: "http://localhost:11434/v1",
     chat_api_key: "ollama",
-    chat_model: "gemma3",
+    chat_model: "qwen3",
     chat_top_k: 5,
     max_agent_loops: 5,
+
+    use_external_chat_api: false,
+    external_chat_base_url: "https://api.minimax.chat/v1",
+    external_chat_api_key: "",
+    external_chat_model: "MiniMax-M2.5",
+    external_chat_api_choice: 1,
+    external_chat_base_url_2: "https://longcat.chat/v1",
+    external_chat_api_key_2: "",
+    external_chat_model_2: "",
   });
 
   const [activeTab, setActiveTab] = useState<TabKey>("general");
@@ -131,15 +155,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         error: (err) => `测试失败: ${err.message}`,
       })
       .finally(() => setIsTesting(false));
-  };
-
-  const handleOpenBrowser = async (url: string) => {
-    try {
-      await openUrl(url);
-    } catch (e) {
-      toast.error("打开浏览器失败，请手动访问");
-      console.error(e);
-    }
   };
 
   if (!isOpen) return null;
@@ -343,11 +358,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     onChange={(v: string) =>
                       setConfig({ ...config, embedding_model: v })
                     }
-                    placeholder="embeddinggemma:300m"
+                    placeholder="qwen3-embedding:0.6b"
                   />
                 </div>
                 <div className="alert alert-warning text-xs">
-                  警告：本项目目前基于 embeddinggemma:300m
+                  警告：本项目基于 qwen3-embedding:0.6b
                   模型制作，如果更换模型可能会导致结果不正确。
                 </div>
               </div>
@@ -504,6 +519,80 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     </div>
                   </div>
                 )}
+
+                {/* Reranker 配置 */}
+                <div className="divider"></div>
+
+                <div>
+                  <h3 className="font-bold text-lg mb-1">重排序模型 (Reranker)</h3>
+                  <p className="text-xs text-base-content/60">
+                    配置搜索结果的重排序模型，提升搜索相关性。
+                  </p>
+                </div>
+
+                <div className="form-control">
+                  <label className="label cursor-pointer justify-start gap-4 border border-base-200 p-3 rounded-lg hover:bg-base-200/30">
+                    <input
+                      type="checkbox"
+                      className="toggle toggle-primary"
+                      checked={config.reranker_type !== "local"}
+                      onChange={(e) =>
+                        setConfig({
+                          ...config,
+                          reranker_type: e.target.checked ? "dashscope" : "local",
+                        })
+                      }
+                    />
+                    <span className="font-bold">启用 Reranker 重排序</span>
+                  </label>
+                </div>
+
+                {config.reranker_type !== "local" && (
+                  <div className="bg-base-200/30 p-6 rounded-xl border border-base-200 space-y-4 animate-in fade-in slide-in-from-top-2">
+                    <SettingInput
+                      label="Reranker 类型"
+                      icon={Settings}
+                      value={config.reranker_type}
+                      onChange={(v: string) =>
+                        setConfig({ ...config, reranker_type: v as "dashscope" | "local" | "custom" })
+                      }
+                      placeholder="dashscope"
+                      type="select"
+                      options={[
+                        { value: "dashscope", label: "阿里云 DashScope" },
+                        { value: "custom", label: "自定义 API" }
+                      ]}
+                    />
+                    <SettingInput
+                      label="API 地址"
+                      icon={Globe}
+                      value={config.reranker_base_url}
+                      onChange={(v: string) =>
+                        setConfig({ ...config, reranker_base_url: v })
+                      }
+                      placeholder={config.reranker_type === "dashscope" ? "https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank" : "https://api.example.com/rerank"}
+                    />
+                    <SettingInput
+                      label="API 密钥"
+                      icon={Key}
+                      type="password"
+                      value={config.reranker_api_key}
+                      onChange={(v: string) =>
+                        setConfig({ ...config, reranker_api_key: v })
+                      }
+                      placeholder="sk-..."
+                    />
+                    <SettingInput
+                      label="模型名称"
+                      icon={Cpu}
+                      value={config.reranker_model}
+                      onChange={(v: string) =>
+                        setConfig({ ...config, reranker_model: v })
+                      }
+                      placeholder={config.reranker_type === "dashscope" ? "qwen3-vl-rerank" : "your-rerank-model"}
+                    />
+                  </div>
+                )}
               </div>
             )}
             {activeTab === "advanced" && (
@@ -570,77 +659,225 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             )}
 
             {activeTab === "about" && (
-              <div className="space-y-8 animate-in fade-in slide-in-from-right-4 duration-300 text-center md:text-left">
+              <div className="space-y-6 animate-in fade-in slide-in-from-right-4 duration-300 text-center md:text-left">
                 <div className="flex flex-col items-center md:items-start gap-4">
                   <div className="bg-primary/10 p-4 rounded-2xl">
-                    <Info size={48} className="text-primary" />
+                    <Key size={48} className="text-primary" />
                   </div>
                   <div>
                     <h2 className="text-2xl font-extrabold text-base-content">
-                      LawVault - 智能法条库
+                      API 配置
                     </h2>
                     <p className="text-sm text-base-content/60 font-mono mt-1">
                       LawVault v{appVersion}
                     </p>
                   </div>
                   <p className="text-base-content/80 leading-relaxed max-w-prose">
-                    一款专为法律从业者设计的本地化智能检索工具。
-                    <br />
-                    基于 Rust
-                    和先进的向量检索技术，在保障数据隐私的前提下，实现了极速、精准的语义搜索。
-                    配合 AI 辅助分析，让法律条文的查找与理解变得前所未有的简单。
+                    启用外部云端 API 可替代本地模型，无需运行 Ollama 服务。
+                    关闭开关则使用本地 Ollama 模型。
                   </p>
                 </div>
 
                 <div className="divider"></div>
 
-                <div className="card bg-base-200/50 border border-base-200">
-                  <div className="card-body p-6">
-                    <h3 className="card-title text-base mb-4 flex items-center gap-2">
-                      <Briefcase size={18} className="text-primary" />{" "}
-                      开发者信息
-                    </h3>
+                <div className="form-control">
+                  <label className="label cursor-pointer justify-start gap-4">
+                    <input
+                      type="checkbox"
+                      className="toggle toggle-primary"
+                      checked={config.use_external_chat_api}
+                      onChange={(e) =>
+                        setConfig((prev) => ({
+                          ...prev,
+                          use_external_chat_api: e.target.checked,
+                        }))
+                      }
+                    />
+                    <span className="label-text font-semibold text-base">
+                      启用外部 API
+                    </span>
+                  </label>
+                  <p className="text-xs text-base-content/50 mt-1 ml-1">
+                    开启后，AI 助手将使用云端模型，不再依赖本地 Ollama
+                  </p>
+                </div>
 
-                    <div className="flex flex-col gap-3">
-                      <div className="flex items-center gap-3">
-                        <div className="avatar placeholder"></div>
-                        <div>
-                          <div className="font-bold">李伯阳 律师</div>
-                          <div className="text-xs opacity-60">
-                            北京市隆安（广州）律师事务所
+                {config.use_external_chat_api && (
+                  <>
+                    <div className="form-control">
+                      <label className="label">
+                        <span className="label-text font-medium">选择云端 API</span>
+                      </label>
+                      <select
+                        className="select select-bordered select-sm"
+                        value={config.external_chat_api_choice}
+                        onChange={(e) =>
+                          setConfig((prev) => ({
+                            ...prev,
+                            external_chat_api_choice: parseInt(e.target.value),
+                          }))
+                        }
+                      >
+                        <option value={1}>MiniMax</option>
+                        <option value={2}>LongCat</option>
+                      </select>
+                    </div>
+
+                    {config.external_chat_api_choice === 1 && (
+                      <div className="card bg-base-200/50 border border-base-200">
+                        <div className="card-body p-5">
+                          <h3 className="card-title text-base mb-4 flex items-center gap-2">
+                            <Globe size={16} className="text-primary" />
+                            MiniMax API
+                          </h3>
+                          <div className="grid grid-cols-1 gap-4">
+                            <SettingInput
+                              label="Base URL"
+                              value={config.external_chat_base_url}
+                              onChange={(val: string) =>
+                                setConfig((prev) => ({
+                                  ...prev,
+                                  external_chat_base_url: val,
+                                }))
+                              }
+                              placeholder="https://api.minimax.chat/v1"
+                              icon={Globe}
+                            />
+                            <SettingInput
+                              label="API Key"
+                              value={config.external_chat_api_key}
+                              onChange={(val: string) =>
+                                setConfig((prev) => ({
+                                  ...prev,
+                                  external_chat_api_key: val,
+                                }))
+                              }
+                              placeholder="sk-..."
+                              icon={Key}
+                            />
+                            <SettingInput
+                              label="模型"
+                              value={config.external_chat_model}
+                              onChange={(val: string) =>
+                                setConfig((prev) => ({
+                                  ...prev,
+                                  external_chat_model: val,
+                                }))
+                              }
+                              placeholder="MiniMax-M2.5"
+                              icon={Cpu}
+                            />
+                          </div>
+                          <div className="mt-4">
+                            <button
+                              onClick={async () => {
+                                setIsTesting(true);
+                                try {
+                                  const result = await checkAiConnection(
+                                    config.external_chat_base_url,
+                                    config.external_chat_api_key,
+                                    config.external_chat_model
+                                  );
+                                  toast.success(result);
+                                } catch (e: any) {
+                                  toast.error(`测试失败: ${e.message}`);
+                                } finally {
+                                  setIsTesting(false);
+                                }
+                              }}
+                              className="btn btn-sm btn-neutral gap-2"
+                              disabled={isTesting}
+                            >
+                              {isTesting ? (
+                                <Loader2 className="animate-spin" size={14} />
+                              ) : (
+                                <CheckCircle2 size={14} />
+                              )}
+                              测试连接
+                            </button>
                           </div>
                         </div>
                       </div>
+                    )}
 
-                      <div className="flex items-center gap-2 mt-2">
-                        <button
-                          onClick={() =>
-                            handleOpenBrowser("mailto:liboyang@lslby.com")
-                          }
-                          className="btn btn-sm btn-ghost bg-base-100 border-base-300 flex-1 gap-2 font-normal"
-                        >
-                          <Mail size={16} className="text-primary/70" />{" "}
-                          邮件联系：liboyang@lslby.com
-                        </button>
-                        <button
-                          onClick={() =>
-                            handleOpenBrowser(
-                              "https://github.com/byronleeeee/lawvault"
-                            )
-                          }
-                          className="btn btn-sm btn-ghost bg-base-100 border-base-300 flex-1 gap-2 font-normal"
-                        >
-                          <Github size={16} /> 访问项目 GitHub 地址
-                        </button>
+                    {config.external_chat_api_choice === 2 && (
+                      <div className="card bg-base-200/50 border border-base-200">
+                        <div className="card-body p-5">
+                          <h3 className="card-title text-base mb-4 flex items-center gap-2">
+                            <Globe size={16} className="text-primary" />
+                            LongCat API
+                          </h3>
+                          <div className="grid grid-cols-1 gap-4">
+                            <SettingInput
+                              label="Base URL"
+                              value={config.external_chat_base_url_2}
+                              onChange={(val: string) =>
+                                setConfig((prev) => ({
+                                  ...prev,
+                                  external_chat_base_url_2: val,
+                                }))
+                              }
+                              placeholder="https://longcat.chat/v1"
+                              icon={Globe}
+                            />
+                            <SettingInput
+                              label="API Key"
+                              value={config.external_chat_api_key_2}
+                              onChange={(val: string) =>
+                                setConfig((prev) => ({
+                                  ...prev,
+                                  external_chat_api_key_2: val,
+                                }))
+                              }
+                              placeholder="sk-..."
+                              icon={Key}
+                            />
+                            <SettingInput
+                              label="模型"
+                              value={config.external_chat_model_2}
+                              onChange={(val: string) =>
+                                setConfig((prev) => ({
+                                  ...prev,
+                                  external_chat_model_2: val,
+                                }))
+                              }
+                              placeholder="longcat-model"
+                              icon={Cpu}
+                            />
+                          </div>
+                          <div className="mt-4">
+                            <button
+                              onClick={async () => {
+                                setIsTesting(true);
+                                try {
+                                  const result = await checkAiConnection(
+                                    config.external_chat_base_url_2,
+                                    config.external_chat_api_key_2,
+                                    config.external_chat_model_2
+                                  );
+                                  toast.success(result);
+                                } catch (e: any) {
+                                  toast.error(`测试失败: ${e.message}`);
+                                } finally {
+                                  setIsTesting(false);
+                                }
+                              }}
+                              className="btn btn-sm btn-neutral gap-2"
+                              disabled={isTesting}
+                            >
+                              {isTesting ? (
+                                <Loader2 className="animate-spin" size={14} />
+                              ) : (
+                                <CheckCircle2 size={14} />
+                              )}
+                              测试连接
+                            </button>
+                          </div>
+                        </div>
                       </div>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="text-xs text-base-content/40 flex items-center justify-center md:justify-start gap-1 mt-8">
-                  <Copyright size={12} />
-                  <span>2025 LawVault. All rights reserved.</span>
-                </div>
+                    )}
+                  </>
+                )}
               </div>
             )}
           </main>

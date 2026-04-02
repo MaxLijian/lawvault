@@ -97,6 +97,10 @@ pub struct AppSettings {
     pub embedding_base_url: String,
     pub embedding_api_key: String,
     pub embedding_model: String,
+    pub reranker_type: String,
+    pub reranker_base_url: String,
+    pub reranker_api_key: String,
+    pub reranker_model: String,
     pub custom_data_path: Option<String>,
     pub enable_ai_chat: bool,
     pub chat_base_url: String,
@@ -105,10 +109,23 @@ pub struct AppSettings {
     pub chat_top_k: usize,
     #[serde(default = "default_max_loops")]
     pub max_agent_loops: i32,
+    #[serde(default)]
+    pub use_external_chat_api: bool,
+    pub external_chat_base_url: String,
+    pub external_chat_api_key: String,
+    pub external_chat_model: String,
+    pub external_chat_api_choice: i32,
+    pub external_chat_base_url_2: String,
+    pub external_chat_api_key_2: String,
+    pub external_chat_model_2: String,
 }
 
 fn default_max_loops() -> i32 {
     5
+}
+
+fn default_reranker_model() -> String {
+    "ms-marco-MiniLM-L-12-v2".to_string()
 }
 
 impl Default for AppSettings {
@@ -119,13 +136,25 @@ impl Default for AppSettings {
             custom_data_path: None,
             embedding_base_url: "http://localhost:11434/v1".to_string(),
             embedding_api_key: "ollama".to_string(),
-            embedding_model: "embeddinggemma:300m".to_string(),
+            embedding_model: "qwen3-embedding:0.6b".to_string(),
+            reranker_type: "dashscope".to_string(),
+            reranker_base_url: "https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank".to_string(),
+            reranker_api_key: "sk-b5ed0ddae2bb4ca1ae401a29111e0360".to_string(),
+            reranker_model: "qwen3-vl-rerank".to_string(),
             enable_ai_chat: false,
             chat_base_url: "http://localhost:11434/v1".to_string(),
             chat_api_key: "ollama".to_string(),
             chat_model: "qwen3".to_string(),
             chat_top_k: 5,
             max_agent_loops: 5,
+            use_external_chat_api: false,
+            external_chat_base_url: "https://api.minimax.chat/v1".to_string(),
+            external_chat_api_key: "".to_string(),
+            external_chat_model: "MiniMax-M2.5".to_string(),
+            external_chat_api_choice: 1,
+            external_chat_base_url_2: "https://longcat.chat/v1".to_string(),
+            external_chat_api_key_2: "".to_string(),
+            external_chat_model_2: "".to_string(),
         }
     }
 }
@@ -150,6 +179,8 @@ pub struct LawChunk {
     pub article_number: String,
     region: String,
     source_file: String,
+    #[serde(default)]
+    pub full_article: Option<String>,
 }
 
 // 用户收藏结构体
@@ -228,7 +259,7 @@ struct ExecutorResponse {
 // 连接 content.db (法条库)
 fn connect_sqlite(data_dir: &std::path::Path) -> Result<Connection, String> {
     let db_path_buf = data_dir.join("content.db");
-    let mut path_str = db_path_buf.to_string_lossy().to_string();
+    let path_str = db_path_buf.to_string_lossy().to_string();
 
     #[cfg(windows)]
     {
@@ -315,7 +346,10 @@ async fn get_embedding(
     api_key: &str,
     model: &str,
 ) -> Result<Vec<f32>, String> {
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(300))
+        .build()
+        .map_err(|e| format!("创建 HTTP 客户端失败: {}", e))?;
     let url = format!("{}/embeddings", base_url.trim_end_matches('/'));
     let prompt = text.replace("\n", " ");
 
@@ -368,7 +402,10 @@ async fn call_llm(
     base_url: &str,
     api_key: &str,
 ) -> Result<String, String> {
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(300))
+        .build()
+        .map_err(|e| e.to_string())?;
     let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
 
     let req_body = serde_json::json!({
@@ -408,41 +445,321 @@ fn clean_json_str(s: &str) -> String {
             if end > start {
                 content.replace_range(start..end + 8, "");
             } else {
-                content = content.replace("<think>", "").replace("</think>", "");
+                break;
             }
         } else {
-            content = content.replace("<think>", "");
+            break;
         }
     }
 
-    // 2. 智能提取 JSON (Array 或 Object)
+    // 2. 移除 ```think ... ``` 代码块格式
+    while let Some(start) = content.find("```think") {
+        if let Some(end_block) = content[start + 8..].find("```") {
+            let actual_end = start + 8 + end_block + 3;
+            content.replace_range(start..actual_end, "");
+        } else {
+            break;
+        }
+    }
+
+    // 3. 移除 <result>...</result> 标签
+    while let Some(start) = content.find("<result>") {
+        if let Some(end) = content.find("</result>") {
+            if end > start {
+                content.replace_range(start..end + 9, "");
+            } else {
+                break;
+            }
+        } else {
+            break;
+        }
+    }
+
+    // 4. 移除 XML 标签 <...>
+    let mut i = 0;
+    let bytes = content.into_bytes();
+    let mut result = Vec::new();
+    let mut in_tag = false;
+    while i < bytes.len() {
+        if bytes[i] == b'<' {
+            in_tag = true;
+            i += 1;
+        } else if bytes[i] == b'>' {
+            in_tag = false;
+            i += 1;
+        } else if !in_tag {
+            result.push(bytes[i]);
+            i += 1;
+        } else {
+            i += 1;
+        }
+    }
+    let content = String::from_utf8_lossy(&result).to_string();
+
+    // 5. 移除普通注释
+    let content = content.replace("<!--", "").replace("-->", "");
+
+    // 6. 移除 <style>...</style>
+    let mut content = content;
+    while let Some(start) = content.find("<style>") {
+        if let Some(end) = content.find("</style>") {
+            if end > start {
+                content.replace_range(start..end + 8, "");
+            } else {
+                break;
+            }
+        } else {
+            break;
+        }
+    }
+
+    // 7. 移除 <script>...</script>
+    while let Some(start) = content.find("<script>") {
+        if let Some(end) = content.find("</script>") {
+            if end > start {
+                content.replace_range(start..end + 9, "");
+            } else {
+                break;
+            }
+        } else {
+            break;
+        }
+    }
+
+    // 8. 智能提取 JSON (Array 或 Object)
     let first_brace = content.find('{');
     let first_bracket = content.find('[');
-    
+
     let (start, end) = match (first_brace, first_bracket) {
         (Some(brace), Some(bracket)) => {
             if brace < bracket {
-                // 对象在数组前面，说明是 {...}
                 (brace, content.rfind('}'))
             } else {
-                // 数组在对象前面，说明是 [...]
                 (bracket, content.rfind(']'))
             }
         },
         (Some(brace), None) => (brace, content.rfind('}')),
         (None, Some(bracket)) => (bracket, content.rfind(']')),
-        (None, None) => return content, // 没找到，直接返回原文本尝试解析
+        (None, None) => return content,
     };
 
-    match (start, end) { // 这里的 start/end 是 usize，不是 Option
+    match (start, end) {
         (s, Some(e)) if s <= e => content[s..=e].to_string(),
-        _ => content // 提取失败，返回原样
+        _ => content
     }
+}
+
+// ==========================================
+// 3.5. Rerank — 支持多种 Reranker 服务
+// ==========================================
+
+fn rerank_chunks(
+    query: &str,
+    chunks: Vec<LawChunk>,
+    settings: &AppSettings,
+) -> Result<Vec<LawChunk>, String> {
+    if chunks.len() <= 1 {
+        return Ok(chunks);
+    }
+
+    let reranker_type = &settings.reranker_type;
+    let reranker_base_url = &settings.reranker_base_url;
+    let reranker_api_key = &settings.reranker_api_key;
+    let reranker_model = &settings.reranker_model;
+    let top_n = chunks.len().min(200);
+
+    // 如果是 local 类型，跳过重排序
+    if reranker_type == "local" {
+        println!("[Rerank] 使用 local 模式，跳过重排序");
+        return Ok(chunks);
+    }
+
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(300))
+        .build()
+        .map_err(|e| format!("创建 HTTP 客户端失败: {}", e))?;
+
+    let documents: Vec<String> = chunks.iter().map(|c| c.content.clone()).collect();
+
+    let req_body = match reranker_type.as_str() {
+        "dashscope" => {
+            // 阿里云 DashScope API 格式
+            serde_json::json!({
+                "model": reranker_model,
+                "input": {
+                    "query": query,
+                    "documents": documents
+                },
+                "parameters": {
+                    "return_documents": true,
+                    "top_n": top_n
+                }
+            })
+        },
+        "custom" => {
+            // 自定义 API 格式，使用通用的 OpenAI 风格
+            serde_json::json!({
+                "model": reranker_model,
+                "query": query,
+                "documents": documents,
+                "top_n": top_n,
+                "return_documents": false
+            })
+        },
+        _ => {
+            // 默认使用自定义格式
+            serde_json::json!({
+                "model": reranker_model,
+                "query": query,
+                "documents": documents,
+                "top_n": top_n,
+                "return_documents": false
+            })
+        }
+    };
+
+    let mut request = client.post(reranker_base_url)
+        .header("Content-Type", "application/json");
+
+    // 添加 API Key 头部
+    if !reranker_api_key.is_empty() {
+        request = request.header("Authorization", format!("Bearer {}", reranker_api_key));
+    }
+
+    let res = request
+        .json(&req_body)
+        .send()
+        .map_err(|e| format!("Rerank 请求失败: {}", e))?;
+
+    if !res.status().is_success() {
+        return Err(format!("Rerank API 错误: {} - {}", res.status(), res.text().unwrap_or("未知错误".to_string())));
+    }
+
+    let json: serde_json::Value = res.json().map_err(|e| format!("Rerank 解析失败: {}", e))?;
+
+    let results = match reranker_type.as_str() {
+        "dashscope" => {
+            // 阿里云 DashScope 响应格式：output.results
+            json.get("output")
+                .and_then(|o| o.get("results"))
+                .and_then(|r| r.as_array())
+                .ok_or("Rerank 响应格式错误：缺少 output.results 字段")?
+        },
+        _ => {
+            // 通用格式：results
+            json.get("results")
+                .and_then(|r| r.as_array())
+                .ok_or("Rerank 响应格式错误：缺少 results 字段")?
+        }
+    };
+
+    let mut reranked: Vec<LawChunk> = Vec::with_capacity(chunks.len());
+    let mut used: std::collections::HashSet<usize> = std::collections::HashSet::new();
+
+    for item in results {
+        let idx = item.get("index")
+            .and_then(|v| v.as_u64())
+            .and_then(|v| Some(v as usize))
+            .unwrap_or(0);
+        if idx < chunks.len() && !used.contains(&idx) {
+            used.insert(idx);
+            reranked.push(chunks[idx].clone());
+        }
+    }
+
+    // 兜底：没排上的按原顺序追加
+    for (i, chunk) in chunks.iter().enumerate() {
+        if !used.contains(&i) {
+            reranked.push(chunk.clone());
+        }
+    }
+
+    Ok(reranked)
 }
 
 // ==========================================
 // 4. 核心逻辑
 // ==========================================
+
+// 法律停用词表（用于 FTS5 召回前置过滤）
+const LEGAL_STOP_WORDS: &[&str] = &[
+    "基于", "关于", "进行", "其中", "及其", "以及", "或者", "并且",
+    "可以", "应当", "必须", "不得", "不能", "不要", "相关", "有关",
+    "其他", "其它", "上述", "以下", "包括", "除外的", "根据", "按照",
+    "通过", "对于", "由于", "因此", "所以", "但是", "然而",
+    "其", "这", "那", "这个", "那个", "这些", "那些", "的", "了",
+    "在", "是", "有", "和", "与", "或", "不", "也", "都", "而",
+];
+
+// 法条编号正则
+const ARTICLE_REGEX: &str = r"第[一二三四五六七八九十百千零\d]+条(?:之[一二三四五六七八九十]?)?(?:第?[一二三四五六七八九十百千零\d]+项?)?";
+
+fn filter_legal_stop_words(query: &str) -> String {
+    let words: Vec<&str> = query.split_whitespace().collect();
+    let filtered: Vec<&str> = words
+        .into_iter()
+        .filter(|w| !LEGAL_STOP_WORDS.contains(w))
+        .collect();
+    filtered.join(" ")
+}
+
+fn extract_article_numbers(query: &str) -> Vec<String> {
+    let mut articles = Vec::new();
+    let regex = regex::Regex::new(ARTICLE_REGEX).ok();
+    if let Some(re) = regex {
+        for cap in re.find_iter(query) {
+            articles.push(cap.as_str().to_string());
+        }
+    }
+    articles
+}
+
+fn fts5_search_query(query: &str) -> String {
+    let words: Vec<&str> = query.split_whitespace().collect();
+    if words.is_empty() {
+        return query.to_string();
+    }
+    let processed: Vec<String> = words
+        .iter()
+        .filter(|w| w.len() > 1 && !LEGAL_STOP_WORDS.contains(*w))
+        .map(|w| format!("\"{}\"", w))
+        .collect();
+    if processed.len() > 1 {
+        processed.join(" OR ")
+    } else if processed.len() == 1 {
+        processed[0].clone()
+    } else {
+        query.to_string()
+    }
+}
+
+// Small-to-Big: 根据 chunk 的 law_name 和 article_number 获取完整法条
+fn fetch_full_article(conn: &Connection, law_name: &str, _article_number: &str) -> Option<String> {
+    let sql = "SELECT full_text FROM full_texts WHERE law_name = ? LIMIT 1";
+    let mut stmt = conn.prepare(sql).ok()?;
+    let full_text: String = stmt.query_row([law_name], |row| row.get(0)).ok()?;
+    if full_text.is_empty() {
+        return None;
+    }
+    Some(full_text)
+}
+
+// 引用校验：检查 LLM 回复中引用的法条是否在 context 中存在
+fn validate_citations(llm_response: &str, context_articles: &[&str]) -> Vec<String> {
+    let regex = match regex::Regex::new(ARTICLE_REGEX) {
+        Ok(re) => re,
+        Err(_) => return Vec::new(),
+    };
+    let mut missing_citations = Vec::new();
+    for cap in regex.find_iter(llm_response) {
+        let article = cap.as_str();
+        let found = context_articles.iter().any(|ctx| ctx.contains(article));
+        if !found {
+            missing_citations.push(article.to_string());
+        }
+    }
+    missing_citations
+}
 
 pub async fn search_law_logic(
     query: String,
@@ -454,16 +771,29 @@ pub async fn search_law_logic(
     let settings = state.settings.lock().unwrap().clone();
     let data_dir = get_effective_data_dir(state);
 
-    let vector = get_embedding(
+    // ========== 三路查询拆解 ==========
+
+    // 路1：正则提取法条编号（精确匹配）
+    let article_numbers = extract_article_numbers(&query);
+    println!(">>> [三路] 提取到法条编号: {:?}", article_numbers);
+
+    // 路2：向量检索
+    let vector = match get_embedding(
         &query,
         &settings.embedding_base_url,
         &settings.embedding_api_key,
         &settings.embedding_model,
     )
-    .await?;
+    .await {
+        Ok(v) => v,
+        Err(e) => {
+            println!(">>> [降级] 向量检索失败: {}，降级到 FTS5", e);
+            Vec::new()
+        }
+    };
 
     let lancedb_path_buf = data_dir.join("law_db.lancedb");
-    let mut path_str = lancedb_path_buf.to_string_lossy().to_string();
+    let path_str = lancedb_path_buf.to_string_lossy().to_string();
     #[cfg(windows)]
     {
         if path_str.starts_with(r"\\?\") {
@@ -471,120 +801,204 @@ pub async fn search_law_logic(
         }
     }
 
-    if !lancedb_path_buf.exists() {
-        return Err(format!("数据库路径不存在: {}", path_str));
-    }
+    let mut vector_results: Vec<(String, f32)> = Vec::new();
 
-    let db = lancedb::connect(&path_str)
-        .execute()
-        .await
-        .map_err(|e| format!("Connect error: {}", e))?;
-    let table = db
-        .open_table("laws_vectors")
-        .execute()
-        .await
-        .map_err(|e| format!("Open table error: {}", e))?;
-
-    let fetch_limit = settings.search_top_k * 3;
-
-    let results_stream = table
-        .query()
-        .nearest_to(vector)
-        .map_err(|e| format!("Vector query error: {}", e))?
-        .limit(fetch_limit)
-        .execute()
-        .await
-        .map_err(|e| format!("Search execution error: {}", e))?;
-
-    let mut stream = results_stream;
-    let mut chunk_ids: Vec<String> = Vec::new();
-    let mut distances: Vec<f32> = Vec::new();
-
-    while let Some(item) = stream.next().await {
-        match item {
-            Ok(batch) => {
-                let id_col = batch.column_by_name("chunk_id").ok_or("Missing chunk_id")?;
-                let dist_col = batch
-                    .column_by_name("_distance")
-                    .ok_or("Missing _distance")?;
-                let ids = id_col
-                    .as_any()
-                    .downcast_ref::<StringArray>()
-                    .ok_or("chunk_id error")?;
-                let dists = dist_col
-                    .as_any()
-                    .downcast_ref::<Float32Array>()
-                    .ok_or("_distance error")?;
-                for i in 0..batch.num_rows() {
-                    chunk_ids.push(ids.value(i).to_string());
-                    distances.push(dists.value(i));
+    if !vector.is_empty() && lancedb_path_buf.exists() {
+        let db = lancedb::connect(&path_str).execute().await;
+        if let Ok(db) = db {
+            let table = db.open_table("laws_vectors").execute().await;
+            if let Ok(table) = table {
+                let fetch_limit = settings.search_top_k * 4;
+                let query = table.query().nearest_to(vector);
+                if let Ok(query) = query {
+                    let results = query.limit(fetch_limit).execute().await;
+                    if let Ok(mut stream) = results {
+                        while let Some(item) = stream.next().await {
+                            if let Ok(batch) = item {
+                                let id_col = batch.column_by_name("chunk_id");
+                                let dist_col = batch.column_by_name("_distance");
+                                if let (Some(id_col), Some(dist_col)) = (id_col, dist_col) {
+                                    let ids = id_col.as_any().downcast_ref::<StringArray>();
+                                    let dists = dist_col.as_any().downcast_ref::<Float32Array>();
+                                    if let (Some(ids), Some(dists)) = (ids, dists) {
+                                        for i in 0..batch.num_rows() {
+                                            vector_results.push((ids.value(i).to_string(), dists.value(i)));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
-            Err(e) => return Err(format!("Stream error: {}", e)),
         }
     }
 
-    if chunk_ids.is_empty() {
+    // 路3：FTS5 全文检索 (BM25)
+    let mut fts5_results: Vec<(String, f32)> = Vec::new();
+    let conn = connect_sqlite(&data_dir)?;
+
+    let fts5_query = fts5_search_query(&query);
+    if !fts5_query.is_empty() {
+        let sql = format!(
+            "SELECT c.id, bm25(chunks_fts) as rank
+             FROM chunks_fts
+             JOIN chunks c ON chunks_fts.rowid = c.rowid
+             WHERE chunks_fts MATCH '{}'
+             ORDER BY rank
+             LIMIT {}",
+            fts5_query, settings.search_top_k * 4
+        );
+
+        if let Ok(mut stmt) = conn.prepare(&sql) {
+            let rows = stmt.query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, f32>(1)?))
+            });
+            if let Ok(rows) = rows {
+                for row in rows.filter_map(Result::ok) {
+                    fts5_results.push(row);
+                }
+            }
+        }
+    }
+
+    // 路0：正则直接命中（如果用户提到了法条编号）
+    let mut direct_results: Vec<(String, f32)> = Vec::new();
+    if !article_numbers.is_empty() {
+        let placeholders: String = article_numbers.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let sql = format!(
+            "SELECT id, 0.0 as score FROM chunks WHERE article_number IN ({}) LIMIT {}",
+            placeholders, settings.search_top_k
+        );
+        if let Ok(mut stmt) = conn.prepare(&sql) {
+            let params: Vec<&dyn rusqlite::ToSql> = article_numbers.iter().map(|s| s as &dyn rusqlite::ToSql).collect();
+            if let Ok(rows) = stmt.query_map(params.as_slice(), |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, f32>(1)?))
+            }) {
+                for row in rows.filter_map(Result::ok) {
+                    direct_results.push(row);
+                }
+            }
+        }
+    }
+
+    println!(">>> [检索结果] 向量: {}, FTS5: {}, 正则直接: {}",
+        vector_results.len(), fts5_results.len(), direct_results.len());
+
+    // ========== RRF 融合 (Reciprocal Rank Fusion) ==========
+    let mut rrf_scores: HashMap<String, f32> = HashMap::new();
+    const RRF_K: f32 = 60.0;
+
+    // 向量路
+    for (i, (id, _dist)) in vector_results.iter().enumerate() {
+        let score = 1.0 / (RRF_K + (i + 1) as f32);
+        *rrf_scores.entry(id.clone()).or_insert(0.0) += score;
+    }
+
+    // FTS5 路
+    for (i, (id, _rank)) in fts5_results.iter().enumerate() {
+        let score = 1.0 / (RRF_K + (i + 1) as f32);
+        *rrf_scores.entry(id.clone()).or_insert(0.0) += score;
+    }
+
+    // 正则直接路（最高权重）
+    for (i, (id, _score)) in direct_results.iter().enumerate() {
+        let score = 10.0 / (1.0 + (i + 1) as f32); // 高权重
+        *rrf_scores.entry(id.clone()).or_insert(0.0) += score;
+    }
+
+    let mut fused_ids: Vec<(String, f32)> = rrf_scores.into_iter().collect();
+    fused_ids.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+    let fused_ids_only: Vec<String> = fused_ids.iter().map(|(id, _)| id.clone()).take(100).collect();
+
+    if fused_ids_only.is_empty() {
+        println!(">>> [警告] 所有检索路都为空，返回空结果");
         return Ok(Vec::new());
     }
 
-    let conn = connect_sqlite(&data_dir)?;
-    let placeholders: String = chunk_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
-    let sql = format!(
-        "SELECT id, content, law_name, category, region, publish_date, part, chapter, article_number 
-         FROM chunks WHERE id IN ({})", 
-        placeholders
-    );
-    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
-    let params = rusqlite::params_from_iter(chunk_ids.iter());
+    // ========== Small-to-Big: 回表查询获取完整 Chunk 信息 + 完整法条 ==========
+    let final_results = {
+        let placeholders: String = fused_ids_only.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let sql = format!(
+            "SELECT id, content, law_name, category, region, publish_date, part, chapter, article_number
+             FROM chunks WHERE id IN ({})",
+            placeholders
+        );
+        let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+        let params = rusqlite::params_from_iter(fused_ids_only.iter());
+        let mut stmt_iter = stmt.query(params).map_err(|e| e.to_string())?;
 
-    let chunk_map: std::collections::HashMap<String, LawChunk> = stmt
-        .query_map(params, |row| {
-            let id: String = row.get(0)?;
-            let law_name: String = row.get(2)?;
-            Ok((
+        let mut chunk_map: HashMap<String, LawChunk> = HashMap::new();
+        while let Some(row) = stmt_iter.next().map_err(|e| e.to_string())? {
+            let id: String = row.get::<_, String>(0).map_err(|e| e.to_string())?;
+            let law_name: String = row.get::<_, String>(2).map_err(|e| e.to_string())?;
+            let article_number: String = row.get::<_, String>(8).map_err(|e| e.to_string())?;
+
+            // Small-to-Big: 获取完整法条
+            let full_article = fetch_full_article(&conn, &law_name, &article_number);
+
+            chunk_map.insert(
                 id.clone(),
                 LawChunk {
                     id,
                     _distance: 0.0,
-                    content: row.get(1)?,
+                    content: row.get::<_, String>(1).map_err(|e| e.to_string())?,
                     law_name: law_name.clone(),
-                    category: row.get(3)?,
-                    region: row.get(4)?,
-                    publish_date: row.get(5)?,
-                    part: row.get(6).unwrap_or_default(),
-                    chapter: row.get(7).unwrap_or_default(),
-                    article_number: row.get(8)?,
+                    category: row.get::<_, String>(3).map_err(|e| e.to_string())?,
+                    region: row.get::<_, String>(4).map_err(|e| e.to_string())?,
+                    publish_date: row.get::<_, String>(5).map_err(|e| e.to_string())?,
+                    part: row.get::<_, String>(6).unwrap_or_default(),
+                    chapter: row.get::<_, String>(7).unwrap_or_default(),
+                    article_number,
                     source_file: format!("{}.txt", law_name),
+                    full_article,
                 },
-            ))
-        })
-        .map_err(|e| e.to_string())?
-        .filter_map(Result::ok)
-        .collect();
+            );
+        }
 
-    let mut final_results = Vec::new();
-    for (i, id) in chunk_ids.iter().enumerate() {
-        if let Some(mut chunk) = chunk_map.get(id).cloned() {
-            chunk._distance = distances[i];
+        let mut results = Vec::new();
+        for (id, rrf_score) in fused_ids.iter() {
+            if let Some(mut chunk) = chunk_map.get(id).cloned() {
+                chunk._distance = *rrf_score;
 
-            let should_keep = if chunk.category != "地方法规" {
-                true
-            } else {
-                if let Some(ref target_region) = filter_region {
-                    chunk.region.contains(target_region)
+                let should_keep = if chunk.category != "地方法规" {
+                    true
                 } else {
-                    false
-                }
-            };
+                    if let Some(ref target_region) = filter_region {
+                        chunk.region.contains(target_region)
+                    } else {
+                        false
+                    }
+                };
 
-            if should_keep {
-                final_results.push(chunk);
+                if should_keep {
+                    results.push(chunk);
+                }
             }
         }
-    }
+        results
+    };
 
-    Ok(final_results
+    // ========== Rerank 重排 (带降级) ==========
+    let query_clone = query.clone();
+    let chunks_clone = final_results.clone();
+    let settings_clone = settings.clone();
+    let search_top_k = settings.search_top_k;
+
+    let reranked = tokio::task::spawn_blocking(move || {
+        rerank_chunks(&query_clone, chunks_clone, &settings_clone)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .unwrap_or_else(|_e: String| {
+        println!(">>> [降级] Reranker 失败，使用 RRF 原始排序");
+        final_results.into_iter().take(search_top_k * 2).collect()
+    });
+
+    println!(">>> [最终] 返回 {} 个结果", reranked.len());
+
+    Ok(reranked
         .into_iter()
         .take(settings.search_top_k)
         .collect())
@@ -1105,6 +1519,8 @@ async fn chat_stream(
     state: tauri::State<'_, AppState>,
 ) -> Result<(), String> {
     let settings = state.settings.lock().unwrap().clone();
+    println!("[ChatStream] 调用: mode={}, use_external={}, external_choice={}", 
+        mode, settings.use_external_chat_api, settings.external_chat_api_choice);
 
     // 深度模式下，允许更多的上下文进入（例如 Top 10），普通模式 Top 5
     let limit = if mode == "deep" || mode == "draft" {
@@ -1213,18 +1629,43 @@ async fn chat_stream(
     };
     let event_id_for_task = event_id.clone();
 
+    let (chat_base_url, chat_api_key, chat_model) = if settings.use_external_chat_api {
+        match settings.external_chat_api_choice {
+            2 => (
+                settings.external_chat_base_url_2.clone(),
+                settings.external_chat_api_key_2.clone(),
+                settings.external_chat_model_2.clone(),
+            ),
+            _ => (
+                settings.external_chat_base_url.clone(),
+                settings.external_chat_api_key.clone(),
+                settings.external_chat_model.clone(),
+            ),
+        }
+    } else {
+        (
+            settings.chat_base_url.clone(),
+            settings.chat_api_key.clone(),
+            settings.chat_model.clone(),
+        )
+    };
+
     let chat_task = tauri::async_runtime::spawn(async move {
-        let client = reqwest::Client::new();
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(300))
+            .build()
+            .unwrap();
         let url = format!(
             "{}/chat/completions",
-            settings.chat_base_url.trim_end_matches('/')
+            chat_base_url.trim_end_matches('/')
         );
+        println!("[ChatStream] 发送请求到: {}, 模型: {}", url, chat_model);
 
         let response = client
             .post(&url)
-            .header("Authorization", format!("Bearer {}", settings.chat_api_key))
+            .header("Authorization", format!("Bearer {}", chat_api_key))
             .json(&serde_json::json!({
-                "model": settings.chat_model,
+                "model": chat_model,
                 "messages": [
                     { "role": "system", "content": system_prompt },
                     { "role": "user", "content": user_prompt }
@@ -1238,6 +1679,7 @@ async fn chat_stream(
         match response {
             Ok(res) => {
                 let mut stream = res.bytes_stream();
+                let mut has_error = false;
                 while let Some(item) = stream.next().await {
                     match item {
                         Ok(bytes) => {
@@ -1246,7 +1688,7 @@ async fn chat_stream(
                                 if line.starts_with("data: ") {
                                     let json_str = line.trim_start_matches("data: ").trim();
                                     if json_str == "[DONE]" {
-                                        break;
+                                        continue;
                                     }
                                     if let Ok(json) =
                                         serde_json::from_str::<serde_json::Value>(json_str)
@@ -1263,16 +1705,21 @@ async fn chat_stream(
                                     }
                                 }
                             }
-                            let _ = app.emit(&event_id_for_task, "[DONE]");
                         }
                         Err(e) => {
-                            let _ = app.emit(&event_id_for_task, format!("[Error: {}]", e));
+                            println!("[ChatStream] Stream error: {}", e);
+                            has_error = true;
+                            let _ = app.emit(&event_id_for_task, format!("[Error: Stream error: {}]", e));
                         }
                     }
                 }
+                if !has_error {
+                    let _ = app.emit(&event_id_for_task, "[DONE]");
+                }
             }
             Err(e) => {
-                let _ = app.emit(&event_id_for_task, format!("[Error: {}]", e));
+                println!("[ChatStream] Request error: {}", e);
+                let _ = app.emit(&event_id_for_task, format!("[Error: Request failed: {}]", e));
             }
         }
     });

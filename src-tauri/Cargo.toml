@@ -29,11 +29,12 @@ tauri-plugin-shell = "2.0.0"
 
 
 tokio = { version = "1", features = ["full"] }
-reqwest = { version = "0.12", features = ["json", "stream"] } 
-rusqlite = { version = "0.31", features = ["bundled"] }  
-lancedb = "0.22.3" 
+reqwest = { version = "0.12", features = ["json", "stream", "blocking"] }
+rusqlite = { version = "0.31", features = ["bundled"] }
+lancedb = "0.22.3"
 arrow-array = "56.0.0"
 futures = "0.3"
 chrono = "0.4.38"
+regex = "1.10"
 tauri-plugin-updater = "2.9.0"
 tauri-plugin-opener = "2.5.2"

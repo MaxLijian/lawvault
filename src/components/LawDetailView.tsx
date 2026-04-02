@@ -782,7 +782,11 @@ export const LawDetailView: React.FC<LawDetailViewProps> = ({
       law.article_number &&
       law.article_number !== "全文"
     ) {
-      const targetId = `article-${normalizeId(law.article_number)}`;
+      const articleInContent = law.content.match(
+        /^(第[一二三四五六七八九十百千万零]+条(?:之一|之二|之三|之四|之五)?)/
+      );
+      const effectiveArticle = articleInContent ? articleInContent[1] : law.article_number;
+      const targetId = `article-${normalizeId(effectiveArticle)}`;
       let attempts = 0;
       const interval = setInterval(() => {
         const targetElement = document.getElementById(targetId);
@@ -811,7 +815,7 @@ export const LawDetailView: React.FC<LawDetailViewProps> = ({
 
       return () => clearInterval(interval);
     }
-  }, [isLoading, fullText, law.article_number]);
+  }, [isLoading, fullText, law.article_number, law.content]);
 
   return (
     <div className="flex flex-row h-full w-full bg-base-100 relative overflow-hidden animate-in fade-in zoom-in-95 duration-200 group/view">

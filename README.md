@@ -9,14 +9,14 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/byronleeeee/lawvault/releases">
-    <img alt="GitHub Release" src="https://img.shields.io/github/v/release/byronleeeee/lawvault?style=flat-square&color=blue">
+  <a href="https://github.com/MaxLijian/lawvault/releases">
+    <img alt="GitHub Release" src="https://img.shields.io/github/v/release/MaxLijian/lawvault?style=flat-square&color=blue">
   </a>
-  <a href="https://github.com/byronleeeee/lawvault/blob/main/LICENSE">
-    <img alt="GitHub License" src="https://img.shields.io/github/license/byronleeeee/lawvault?style=flat-square">
+  <a href="https://github.com/MaxLijian/lawvault/blob/main/LICENSE">
+    <img alt="GitHub License" src="https://img.shields.io/github/license/MaxLijian/lawvault?style=flat-square">
   </a>
-  <a href="https://github.com/byronleeeee/lawvault/issues">
-    <img alt="GitHub Issues" src="https://img.shields.io/github/issues/byronleeeee/lawvault?style=flat-square&color=orange">
+  <a href="https://github.com/MaxLijian/lawvault/issues">
+    <img alt="GitHub Issues" src="https://img.shields.io/github/issues/MaxLijian/lawvault?style=flat-square&color=orange">
   </a>
 </p>
 
@@ -34,6 +34,13 @@
 - 💼 **专业交互**: 专为律师设计，支持法条引用复制、收藏分组及全文阅读。
 - 🖥️ **全平台**: 完美支持 Windows、macOS 和 Linux。
 
+### 技术亮点
+
+- **三路检索融合**: 向量检索 + FTS5全文检索 + 正则法条编号匹配，RRF算法融合
+- **Small-to-Big 上下文**: 检索返回完整法条，避免断章取义
+- **智能降级**: 任何一路检索失败自动降级，保证永远有结果
+- **引用校验**: 防止AI幻觉，确保法条引用准确
+
 ## ⚠️ 数据文件配置说明 (重要)
 
 由于法律数据库体积较大，**不包含在软件安装包中**。请在运行软件前，按照以下步骤准备数据：
@@ -46,7 +53,7 @@
 2.  **解压文件**：可以将该压缩包解压到您启动文件的同目录下，或电脑的任意位置（建议存放在非系统盘，例如 `D:\LawData` 或 `~/Documents/LawData`）。
 3.  **目录结构核对**：
     解压后的文件夹内**必须**直接包含以下两个文件/文件夹，结构如下：
-    
+
     如放在软件同目录下：
     ```text
     您的软件文件夹/
@@ -82,26 +89,29 @@
 - **一键引用**：提供标准的法条引用格式复制，方便起草文书。
 
 ### ⭐ 收藏夹
-- 创建自定义收藏夹（如“合同纠纷常用”、“劳动法相关”）。
+- 创建自定义收藏夹（如"合同纠纷常用"、"劳动法相关"）。
 - 拖拽式管理或右键快速操作。
 
 ### 🤖 AI 法律助手
-- 配置本地 LLM (如 qwen, gemma) 进行对话。
+- 配置本地 LLM (如 qwen, gemma) 或外部 API (MiniMax, LongCat) 进行对话。
 - 基于检索到的法条内容进行总结和解释，减少幻觉。
+- 支持**深度思考模式 (Agentic RAG)**，自动规划检索策略。
 
 ## 🚀 快速开始
 
 ### 1. 安装应用
-从 [发布页面](https://github.com/byronleeeee/lawvault/releases) 下载适用于您系统的安装包：
+从 [发布页面](https://github.com/MaxLijian/lawvault/releases) 下载适用于您系统的安装包：
 - **Windows**: 下载 `.exe` 安装包或绿色版。
 - **macOS**: 下载 `.dmg` 或 `.app`。
 - **Linux**: 下载 `.AppImage` 或 `.deb`。
 
-### 2. 准备环境（推荐使用Ollama，其他平台请自行安装）
+### 2. 准备环境
+
+#### 使用 Ollama（推荐本地部署）
 1. 下载并安装 [Ollama](https://ollama.com/)。
-2. 拉取EmbeddingGemma 模型：
+2. 拉取 Embedding 模型：
    ```bash
-   ollama pull embeddinggemma:300m
+   ollama pull qwen3-embedding:0.6b
    ```
 
 **注意：仅支持未量化的FP32或量化的FP16模型，请勿使用Q8/Q4模型，否则会导致返回结果出错。**
@@ -110,7 +120,12 @@
    ```bash
    ollama pull qwen3
    ```
-   然后在LawVault 设置中启用 AI 功能
+   然后在 LawVault 设置中启用 AI 功能
+
+#### 使用外部 API
+- 支持配置 **MiniMax**、**LongCat** 等外部 API
+- 支持配置 **DashScope** (阿里云) 或 **OpenRouter** 作为 Reranker
+- 在「关于软件」设置中配置外部 API
 
 
 ## 🛠 开发环境搭建
@@ -125,7 +140,7 @@
 #### 构建步骤
 ```bash
 # 1. 克隆项目
-git clone https://github.com/byronleeeee/lawvault.git
+git clone https://github.com/MaxLijian/lawvault.git
 
 # 2. 安装依赖
 npm install
@@ -143,7 +158,7 @@ npm run tauri build
 
 ## 👥 贡献与联系
 
-- **Bug 反馈**: 请提交 [GitHub Issue](https://github.com/byronleeeee/lawvault/issues)。
+- **Bug 反馈**: 请提交 [GitHub Issue](https://github.com/MaxLijian/lawvault/issues)。
 - **邮件联系**: [liboyang@lslby.com]
 
 ---
