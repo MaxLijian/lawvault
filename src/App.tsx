@@ -266,6 +266,7 @@ function App() {
       await stopTask(currentAgentIdRef.current);
       currentAgentIdRef.current = null;
     }
+    setQuery(searchQuery);
     setExecutedQuery(searchQuery);
     setIsLoading(true);
     setError(null);

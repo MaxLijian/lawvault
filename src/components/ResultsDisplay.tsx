@@ -139,7 +139,7 @@ export const ResultsDisplay: React.FC<ResultsDisplayProps> = ({
         animate="show"
         key={results.length}
       >
-        {results.length > 0 && query && (
+        {query && (isDeepThink || results.length > 0) && (
           <AIChatBox
             query={query}
             results={results}

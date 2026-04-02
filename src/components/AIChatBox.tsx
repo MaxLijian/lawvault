@@ -42,11 +42,15 @@ export const AIChatBox: React.FC<AIChatBoxProps> = ({ query, results, mode = "si
   };
 
   const { thought, content } = useMemo(() => {
-    const thinkMatch = rawOutput.match(/<think>([\s\S]*?)(?:<\/think>|$)/);
-    const thoughtContent = thinkMatch ? thinkMatch[1].trim() : "";
-    let mainContent = rawOutput.replace(/<think>[\s\S]*?<\/think>/g, "").trim();
+    // Handle both <think> and <longcat_think> tags
+    const thinkMatch = rawOutput.match(/<(longcat_)?think>([\s\S]*?)(?:<\/\1?think>|$)/);
+    const thoughtContent = thinkMatch ? thinkMatch[2].trim() : "";
+    let mainContent = rawOutput
+      .replace(/<think>[\s\S]*?<\/think>/g, "")
+      .replace(/<longcat_think>[\s\S]*?<\/longcat_think>/g, "")
+      .trim();
     
-    if (rawOutput.includes("<think>") && !rawOutput.includes("</think>")) {
+    if ((rawOutput.includes("<think>") || rawOutput.includes("<longcat_think>")) && !rawOutput.includes("</think>") && !rawOutput.includes("</longcat_think>")) {
         mainContent = ""; 
     }
 
@@ -56,7 +60,9 @@ export const AIChatBox: React.FC<AIChatBoxProps> = ({ query, results, mode = "si
   const showThought = isThoughtExpanded || (isStreaming && !content && !!thought);
 
   useEffect(() => {
-    if (!isEnabled || !query || results.length === 0) return;
+    // 深度思考模式下允许空结果，其他模式和要求有搜索结果
+    const shouldProceed = isEnabled && query && (mode === "deep" || results.length > 0);
+    if (!shouldProceed) return;
 
     let unlisten: (() => void) | undefined;
     const currentEventId = `chat-${Date.now()}-${Math.random().toString(36).substring(7)}`;
@@ -69,9 +75,11 @@ export const AIChatBox: React.FC<AIChatBoxProps> = ({ query, results, mode = "si
       setIsThoughtExpanded(true);
 
       try {
-        const contextChunks = results.map(
-          (r) => `法规：${r.law_name} ${r.article_number}\n内容：${r.content}`
-        );
+        const contextChunks = results.length > 0
+          ? results.map(
+              (r) => `法规：${r.law_name} ${r.article_number}\n内容：${r.content}`
+            )
+          : [];
 
         unlisten = await startChatStream(query, contextChunks, mode, (token) => {
           if (token === "[DONE]") {

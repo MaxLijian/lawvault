@@ -401,39 +401,252 @@ async fn call_llm(
     prompt: &str,
     base_url: &str,
     api_key: &str,
+    enable_thinking: bool,
 ) -> Result<String, String> {
     let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(300))
+        .timeout(std::time::Duration::from_secs(600))
         .build()
         .map_err(|e| e.to_string())?;
     let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
 
-    let req_body = serde_json::json!({
-        "model": model,
-        "messages": [{ "role": "user", "content": prompt }],
-        "temperature": 0.1,
-        "stream": false
-    });
-
-    let res = client
-        .post(&url)
-        .header("Authorization", format!("Bearer {}", api_key))
-        .json(&req_body)
-        .send()
-        .await
-        .map_err(|e| e.to_string())?;
-
-    if !res.status().is_success() {
-        return Err(format!("LLM API Error: {}", res.status()));
+    fn extract_content(json: &serde_json::Value) -> Option<String> {
+        if let Some(content) = json["choices"][0]["message"]["content"].as_str() {
+            return Some(content.to_string());
+        }
+        if let Some(content) = json["choices"][0]["content"].as_str() {
+            return Some(content.to_string());
+        }
+        if let Some(content) = json["message"]["content"].as_str() {
+            return Some(content.to_string());
+        }
+        if let Some(content) = json["content"].as_str() {
+            return Some(content.to_string());
+        }
+        None
     }
 
-    let json: serde_json::Value = res.json().await.map_err(|e| e.to_string())?;
-    let content = json["choices"][0]["message"]["content"]
-        .as_str()
-        .ok_or("No content in response")?
-        .to_string();
+    fn clean_text(raw: &str) -> String {
+        raw.replace("<longcat_think>", "<think>")
+            .replace("</longcat_think>", "</think>")
+            .replace("<result>", "")
+            .replace("</result>", "")
+    }
 
-    Ok(content)
+    let mut req_map = serde_json::Map::new();
+    req_map.insert("model".into(), serde_json::Value::String(model.to_string()));
+    req_map.insert(
+        "messages".into(),
+        serde_json::json!([{ "role": "user", "content": prompt }]),
+    );
+    req_map.insert("temperature".into(), serde_json::json!(0.1));
+    req_map.insert("stream".into(), serde_json::json!(false));
+    req_map.insert("max_tokens".into(), serde_json::json!(2048));
+    if enable_thinking {
+        req_map.insert("enable_thinking".into(), serde_json::json!(true));
+    }
+
+    let mut last_err = String::new();
+    for attempt in 1..=3 {
+        let req_body = serde_json::Value::Object(req_map.clone());
+        let send_result = client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", api_key))
+            .json(&req_body)
+            .send()
+            .await;
+
+        match send_result {
+            Ok(res) => {
+                let status = res.status();
+                let body_text = res.text().await.unwrap_or_default();
+
+                if !status.is_success() {
+                    last_err = format!("LLM API Error: {} body={}", status, body_text);
+
+                    if status.as_u16() == 400 && req_map.contains_key("max_tokens") {
+                        req_map.remove("max_tokens");
+                        req_map.insert("max_completion_tokens".into(), serde_json::json!(2048));
+                    }
+
+                    if status.is_server_error() || status.as_u16() == 429 {
+                        tokio::time::sleep(std::time::Duration::from_secs(2 * attempt)).await;
+                        continue;
+                    }
+
+                    if attempt < 3 {
+                        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                        continue;
+                    }
+                    return Err(last_err);
+                }
+
+                let json: serde_json::Value =
+                    serde_json::from_str(&body_text).map_err(|e| format!("JSON parse failed: {} raw={}", e, body_text))?;
+
+                if let Some(content) = extract_content(&json) {
+                    return Ok(content);
+                }
+
+                last_err = format!("No content in response: {}", json);
+            }
+            Err(e) => {
+                last_err = format!("Request failed: {}", e);
+                tokio::time::sleep(std::time::Duration::from_secs(2 * attempt)).await;
+                continue;
+            }
+        }
+    }
+
+    // 回退到流式模式，兼容部分 LongCat 接口对非流式返回不稳定的情况
+    req_map.insert("stream".into(), serde_json::json!(true));
+    if req_map.contains_key("max_completion_tokens") {
+        req_map.remove("max_completion_tokens");
+        req_map.insert("max_tokens".into(), serde_json::json!(2048));
+    }
+
+    for attempt in 1..=2 {
+        let req_body = serde_json::Value::Object(req_map.clone());
+        let send_result = client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", api_key))
+            .json(&req_body)
+            .send()
+            .await;
+
+        match send_result {
+            Ok(res) => {
+                let status = res.status();
+                if !status.is_success() {
+                    let body_text = res.text().await.unwrap_or_default();
+                    last_err = format!("LLM Stream API Error: {} body={}", status, body_text);
+                    tokio::time::sleep(std::time::Duration::from_secs(attempt as u64)).await;
+                    continue;
+                }
+
+                let mut stream = res.bytes_stream();
+                let mut line_buf = String::new();
+                let mut collected = String::new();
+
+                while let Some(item) = stream.next().await {
+                    match item {
+                        Ok(bytes) => {
+                            let text = String::from_utf8_lossy(&bytes);
+                            line_buf.push_str(&text);
+
+                            while let Some(newline_pos) = line_buf.find('\n') {
+                                let line = line_buf[..newline_pos].to_string();
+                                line_buf = line_buf[newline_pos + 1..].to_string();
+                                let trimmed_line = line.trim();
+
+                                if trimmed_line == "[DONE]"
+                                    || trimmed_line == "data:[DONE]"
+                                    || trimmed_line == "data: [DONE]"
+                                {
+                                    break;
+                                }
+
+                                if trimmed_line.starts_with("data:") && trimmed_line.len() > 5 {
+                                    let json_str = trimmed_line[5..].trim_start();
+                                    if json_str.is_empty() {
+                                        continue;
+                                    }
+
+                                    if let Ok(json) = serde_json::from_str::<serde_json::Value>(json_str)
+                                    {
+                                        if let Some(reasoning) =
+                                            json["choices"][0]["delta"]["reasoning_content"].as_str()
+                                        {
+                                            collected.push_str(&clean_text(reasoning));
+                                        }
+                                        if let Some(content) =
+                                            json["choices"][0]["delta"]["content"].as_str()
+                                        {
+                                            collected.push_str(&clean_text(content));
+                                        } else if let Some(content) = extract_content(&json) {
+                                            collected.push_str(&clean_text(&content));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            last_err = format!("LLM stream read error: {}", e);
+                        }
+                    }
+                }
+
+                if !collected.trim().is_empty() {
+                    return Ok(collected);
+                }
+                last_err = "LLM stream returned empty content".to_string();
+            }
+            Err(e) => {
+                last_err = format!("LLM stream request failed: {}", e);
+                tokio::time::sleep(std::time::Duration::from_secs(attempt as u64)).await;
+                continue;
+            }
+        }
+    }
+
+    Err(last_err)
+}
+
+fn parse_executor_response(raw: &str) -> Option<ExecutorResponse> {
+    let clean = clean_json_str(raw);
+
+    if let Ok(res) = serde_json::from_str::<ExecutorResponse>(&clean) {
+        return Some(res);
+    }
+
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&clean) {
+        let thought = v
+            .get("thought")
+            .and_then(|x| x.as_str())
+            .or_else(|| v.get("analysis").and_then(|x| x.as_str()))
+            .or_else(|| v.get("reasoning").and_then(|x| x.as_str()))
+            .unwrap_or("已完成当前任务评估。")
+            .to_string();
+
+        let candidates = ["new_todo_list", "todo_list", "tasks", "next_tasks"];
+        for key in candidates {
+            if let Some(arr) = v.get(key).and_then(|x| x.as_array()) {
+                let list: Vec<String> = arr
+                    .iter()
+                    .filter_map(|item| item.as_str().map(|s| s.trim().to_string()))
+                    .filter(|s| !s.is_empty())
+                    .collect();
+                if !list.is_empty() {
+                    return Some(ExecutorResponse {
+                        thought,
+                        new_todo_list: list,
+                    });
+                }
+            }
+        }
+    }
+
+    let mut thought_line = String::new();
+    for line in raw.lines() {
+        let t = line.trim();
+        if t.starts_with("思考:") || t.starts_with("thought:") || t.starts_with("Thought:") {
+            thought_line = t
+                .trim_start_matches("思考:")
+                .trim_start_matches("thought:")
+                .trim_start_matches("Thought:")
+                .trim()
+                .to_string();
+            break;
+        }
+    }
+
+    if thought_line.is_empty() {
+        thought_line = "已完成当前任务评估。".to_string();
+    }
+
+    Some(ExecutorResponse {
+        thought: thought_line,
+        new_todo_list: vec![],
+    })
 }
 
 fn clean_json_str(s: &str) -> String {
@@ -1034,12 +1247,31 @@ async fn start_agent_search(
     }
 
     let settings = state.settings.lock().unwrap().clone();
-    let (model, base_url, api_key, max_loops) = (
-        settings.chat_model,
-        settings.chat_base_url,
-        settings.chat_api_key,
-        settings.max_agent_loops,
-    );
+    let (model, base_url, api_key, max_loops) = if settings.use_external_chat_api {
+        if settings.external_chat_api_choice == 2 {
+            (
+                settings.external_chat_model_2.clone(),
+                settings.external_chat_base_url_2.clone(),
+                settings.external_chat_api_key_2.clone(),
+                settings.max_agent_loops,
+            )
+        } else {
+            (
+                settings.external_chat_model.clone(),
+                settings.external_chat_base_url.clone(),
+                settings.external_chat_api_key.clone(),
+                settings.max_agent_loops,
+            )
+        }
+    } else {
+        (
+            settings.chat_model.clone(),
+            settings.chat_base_url.clone(),
+            settings.chat_api_key.clone(),
+            settings.max_agent_loops,
+        )
+    };
+    let enable_thinking = settings.use_external_chat_api && settings.external_chat_api_choice == 2;
 
     let mut completed_log: Vec<CompletedTask> = vec![];
 
@@ -1064,7 +1296,7 @@ async fn start_agent_search(
 
     let plan_prompt = PLANNER_PROMPT.replace("{user_query}", &query);
     println!(">>> Agent Planning...");
-    let mut todo_list: Vec<String> = match call_llm(&model, &plan_prompt, &base_url, &api_key).await
+    let mut todo_list: Vec<String> = match call_llm(&model, &plan_prompt, &base_url, &api_key, enable_thinking).await
     {
         Ok(json) => {
             println!(">>> LLM Raw Output: {}", json);
@@ -1174,19 +1406,20 @@ async fn start_agent_search(
                 &serde_json::to_string(&todo_list).unwrap_or("[]".into()),
             );
         check_abort!();
-        match call_llm(&model, &review_prompt, &base_url, &api_key).await {
+        match call_llm(&model, &review_prompt, &base_url, &api_key, enable_thinking).await {
             Ok(json) => {
-                let clean = clean_json_str(&json);
-                if let Ok(res) = serde_json::from_str::<ExecutorResponse>(&clean) {
+                if let Some(res) = parse_executor_response(&json) {
                     println!(">>> [Agent] Thought: {}", res.thought);
-                    println!(">>> [Agent] Updated List: {:?}", res.new_todo_list);
-                    todo_list = res.new_todo_list;
+                    if !res.new_todo_list.is_empty() {
+                        println!(">>> [Agent] Updated List: {:?}", res.new_todo_list);
+                        todo_list = res.new_todo_list;
+                    }
                     completed_log.push(CompletedTask {
                         task: current_task,
                         thought: res.thought,
                     });
                 } else {
-                    println!(">>> [Agent] JSON Parse Failed: {}", clean);
+                    println!(">>> [Agent] Response Parse Failed: {}", json);
                     completed_log.push(CompletedTask {
                         task: current_task,
                         thought: "解析思考结果失败，继续执行原计划。".into(),
@@ -1652,7 +1885,7 @@ async fn chat_stream(
 
     let chat_task = tauri::async_runtime::spawn(async move {
         let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(300))
+            .timeout(std::time::Duration::from_secs(600))
             .build()
             .unwrap();
         let url = format!(
@@ -1671,6 +1904,7 @@ async fn chat_stream(
                     { "role": "user", "content": user_prompt }
                 ],
                 "stream": true,
+                "max_tokens": if mode == "deep" { 4096 } else { 2048 },
                 "temperature": if mode == "deep" { 0.4 } else { 0.3 }
             }))
             .send()
@@ -1679,28 +1913,71 @@ async fn chat_stream(
         match response {
             Ok(res) => {
                 let mut stream = res.bytes_stream();
-                let mut has_error = false;
+                let mut line_buf = String::new();
                 while let Some(item) = stream.next().await {
                     match item {
                         Ok(bytes) => {
                             let text = String::from_utf8_lossy(&bytes);
-                            for line in text.lines() {
-                                if line.starts_with("data: ") {
-                                    let json_str = line.trim_start_matches("data: ").trim();
-                                    if json_str == "[DONE]" {
+                            line_buf.push_str(&text);
+
+                            while let Some(newline_pos) = line_buf.find('\n') {
+                                let line = line_buf[..newline_pos].to_string();
+                                line_buf = line_buf[newline_pos + 1..].to_string();
+
+                                let trimmed_line = line.trim();
+                                // 兼容 data:[DONE] 和 data: [DONE]
+                                if trimmed_line == "[DONE]"
+                                    || trimmed_line == "data:[DONE]"
+                                    || trimmed_line == "data: [DONE]"
+                                {
+                                    let _ = app.emit(&event_id_for_task, "[DONE]");
+                                    return;
+                                } else if trimmed_line.starts_with("data:") && trimmed_line.len() > 5 {
+                                    let json_str = trimmed_line[5..].trim_start();
+                                    if json_str.is_empty() {
                                         continue;
                                     }
                                     if let Ok(json) =
                                         serde_json::from_str::<serde_json::Value>(json_str)
                                     {
+                                        if let Some(reasoning) =
+                                            json["choices"][0]["delta"]["reasoning_content"].as_str()
+                                        {
+                                            let converted = reasoning
+                                                .replace("<longcat_think>", "<think>")
+                                                .replace("</longcat_think>", "</think>");
+                                            let wrapped = format!(
+                                                "<think>{}</think>",
+                                                converted.replace("<think>", "").replace("</think>", "")
+                                            );
+                                            let _ = app.emit(&event_id_for_task, &wrapped);
+                                        }
+
                                         if let Some(content) =
                                             json["choices"][0]["delta"]["content"].as_str()
                                         {
-                                            let _ = app.emit(&event_id_for_task, content);
+                                            let clean = content
+                                                .replace("<think>", "")
+                                                .replace("</think>", "")
+                                                .replace("<longcat_think>", "")
+                                                .replace("</longcat_think>", "");
+                                            let _ = app.emit(&event_id_for_task, &clean);
                                         } else if let Some(content) =
                                             json["message"]["content"].as_str()
                                         {
-                                            let _ = app.emit(&event_id_for_task, content);
+                                            let clean = content
+                                                .replace("<think>", "")
+                                                .replace("</think>", "")
+                                                .replace("<longcat_think>", "")
+                                                .replace("</longcat_think>", "");
+                                            let _ = app.emit(&event_id_for_task, &clean);
+                                        } else if let Some(content) = json["content"].as_str() {
+                                            let clean = content
+                                                .replace("<think>", "")
+                                                .replace("</think>", "")
+                                                .replace("<longcat_think>", "")
+                                                .replace("</longcat_think>", "");
+                                            let _ = app.emit(&event_id_for_task, &clean);
                                         }
                                     }
                                 }
@@ -1708,14 +1985,11 @@ async fn chat_stream(
                         }
                         Err(e) => {
                             println!("[ChatStream] Stream error: {}", e);
-                            has_error = true;
                             let _ = app.emit(&event_id_for_task, format!("[Error: Stream error: {}]", e));
                         }
                     }
                 }
-                if !has_error {
-                    let _ = app.emit(&event_id_for_task, "[DONE]");
-                }
+                let _ = app.emit(&event_id_for_task, "[DONE]");
             }
             Err(e) => {
                 println!("[ChatStream] Request error: {}", e);

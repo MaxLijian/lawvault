@@ -97,6 +97,20 @@
 - 基于检索到的法条内容进行总结和解释，减少幻觉。
 - 支持**深度思考模式 (Agentic RAG)**，自动规划检索策略。
 
+### 🧩 Intel 迁移与兼容性更新（2026-04）
+- 已完成 Apple Silicon 到 Intel macOS 的迁移适配，Intel 设备可正常运行与打包。
+- 深度思考模式已对齐聊天模型选择：
+  - 本地模式：使用本地 Chat 模型配置。
+  - 外部 API 模式：使用当前选定的外部模型（含 LongCat 通道）。
+- 已增强 LongCat 兼容：
+  - 兼容 `<longcat_think>` / `<think>` 标签解析。
+  - 兼容 `data:[DONE]` 与 `data: [DONE]` 流式结束格式。
+  - 兼容 `reasoning_content`、`choices.delta.content`、`message.content` 等多种返回结构。
+- 已增强 Agentic RAG 稳定性：
+  - 规划与执行阶段增加 JSON 容错解析。
+  - 非流式请求失败时自动回退到流式读取。
+  - 增加重试与超时优化，减少慢响应导致的中断。
+
 ## 🚀 快速开始
 
 ### 1. 安装应用
@@ -133,7 +147,7 @@
 如果您是开发者并希望贡献代码：
 
 #### 前置条件
-- [Node.js](https://nodejs.org/) (v18+)
+- [Node.js](https://nodejs.org/) (建议 v20.19+ 或 v22.12+，与当前 Vite 版本兼容)
 - [Rust](https://rustup.rs/) (最新稳定版)
 - [pnpm](https://pnpm.io/) 或 npm
 
